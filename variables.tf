@@ -61,3 +61,9 @@ variable "monitor_instance_type" {
   type = string
   default = "t3.micro"
 }
+
+variable "admin_ssh_cidr" {
+  description = "CIDR block allowed to SSH into admin instance. Use VPC CIDR (10.50.0.0/16) to allow all VPN users, or a narrower range for admin-only VPN clients."
+  type        = string
+  default     = "10.50.0.0/16"
+}
