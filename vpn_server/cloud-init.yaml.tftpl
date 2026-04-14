@@ -1,0 +1,138 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - openvpn
+  - easy-rsa
+  - iptables-persistent
+  - openssl
+
+write_files:
+  - path: /etc/sysctl.d/99-openvpn.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      net.ipv4.ip_forward=1
+
+  - path: /etc/openvpn/server/server.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      port ${vpn_port}
+      proto udp
+      dev tun
+      topology subnet
+      server ${vpn_network} ${vpn_netmask}
+      ifconfig-pool-persist /var/lib/openvpn/ipp.txt
+%{ for r in pushed_routes ~}
+      push "route ${r.network} ${r.netmask}"
+%{ endfor ~}
+      keepalive 10 120
+      persist-key
+      persist-tun
+      data-ciphers AES-256-GCM:AES-128-GCM
+      data-ciphers-fallback AES-256-GCM
+      auth SHA256
+      ca /etc/openvpn/server/ca.crt
+      cert /etc/openvpn/server/server.crt
+      key /etc/openvpn/server/server.key
+      dh /etc/openvpn/server/dh.pem
+      tls-crypt /etc/openvpn/server/tc.key
+      user nobody
+      group nogroup
+      verb 3
+      status /var/log/openvpn-status.log
+
+  - path: /usr/local/sbin/ranger-vpn-setup.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euxo pipefail
+
+      VPN_PORT=${vpn_port}
+      VPN_CIDR=${vpn_cidr}
+      NUM_TEAMS=${num_teams}
+      PUBLIC_IP=${public_ip}
+      EASYRSA_DIR=/etc/openvpn/easy-rsa
+      CLIENTS_DIR=/root/client-configs
+
+      sysctl --system
+
+      mkdir -p /var/lib/openvpn
+
+      /usr/bin/make-cadir "$EASYRSA_DIR"
+      cd "$EASYRSA_DIR"
+
+      export EASYRSA_BATCH=1
+      export EASYRSA_REQ_CN=ranger-ca
+      ./easyrsa init-pki
+      ./easyrsa build-ca nopass
+      ./easyrsa gen-dh
+      ./easyrsa build-server-full server nopass
+      /usr/sbin/openvpn --genkey secret pki/tc.key
+
+      install -m 0644 pki/ca.crt /etc/openvpn/server/ca.crt
+      install -m 0644 pki/issued/server.crt /etc/openvpn/server/server.crt
+      install -m 0600 pki/private/server.key /etc/openvpn/server/server.key
+      install -m 0644 pki/dh.pem /etc/openvpn/server/dh.pem
+      install -m 0600 pki/tc.key /etc/openvpn/server/tc.key
+
+      mkdir -p "$CLIENTS_DIR"
+      chmod 700 "$CLIENTS_DIR"
+
+      make_client() {
+        local name="$1"
+        ./easyrsa build-client-full "$name" nopass
+        local ca cert key tc
+        ca=$(cat pki/ca.crt)
+        cert=$(openssl x509 -in "pki/issued/$name.crt")
+        key=$(cat "pki/private/$name.key")
+        tc=$(cat pki/tc.key)
+        cat > "$CLIENTS_DIR/$name.ovpn" <<OVPN
+      client
+      dev tun
+      proto udp
+      remote $PUBLIC_IP $VPN_PORT
+      resolv-retry infinite
+      nobind
+      persist-key
+      persist-tun
+      remote-cert-tls server
+      data-ciphers AES-256-GCM:AES-128-GCM
+      data-ciphers-fallback AES-256-GCM
+      auth SHA256
+      verb 3
+      <ca>
+      $ca
+      </ca>
+      <cert>
+      $cert
+      </cert>
+      <key>
+      $key
+      </key>
+      <tls-crypt>
+      $tc
+      </tls-crypt>
+      OVPN
+        chmod 600 "$CLIENTS_DIR/$name.ovpn"
+      }
+
+      make_client admin
+      for i in $(seq 1 "$NUM_TEAMS"); do
+        make_client "team_$i"
+      done
+
+      IFACE=$(ip -4 route show default | awk '{print $5; exit}')
+      iptables -A FORWARD -i tun+ -j ACCEPT
+      iptables -A FORWARD -o tun+ -j ACCEPT
+      iptables -t nat -A POSTROUTING -s "$VPN_CIDR" -o "$IFACE" -j MASQUERADE
+
+      mkdir -p /etc/iptables
+      iptables-save > /etc/iptables/rules.v4
+
+      systemctl enable --now openvpn-server@server
+
+runcmd:
+  - [ bash, -lc, "/usr/local/sbin/ranger-vpn-setup.sh 2>&1 | tee /var/log/ranger-vpn-setup.log" ]

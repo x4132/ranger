@@ -25,6 +25,14 @@ resource "aws_security_group" "vpn_sg" {
     ipv6_cidr_blocks = ["::/0"]
   }
 
+  ingress {
+    description     = "Allow SSH from admin bastion"
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.admin_sg.id]
+  }
+
   tags = {
     Name = "vpn_sg"
   }
@@ -36,4 +44,20 @@ module "vpn" {
   instance_type     = var.vpn_instance_type
   vpn_subnet_id     = aws_subnet.ranger_public.id
   security_group_id = aws_security_group.vpn_sg.id
+  num_teams         = var.num_teams
+  key_name          = aws_key_pair.admin_key.key_name
+  pushed_routes = [
+    aws_vpc.ranger_main.cidr_block,
+    aws_vpc.ranger_teams.cidr_block,
+  ]
+}
+
+output "vpn_public_ip" {
+  description = "Public EIP of the VPN server"
+  value       = module.vpn.public_ip
+}
+
+output "vpn_private_ip" {
+  description = "Private IP of the VPN server (reach via admin bastion)"
+  value       = module.vpn.private_ip
 }

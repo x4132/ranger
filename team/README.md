@@ -1,3 +1,3 @@
 # Team Module
 
-This module initializes a team, including its subnet within the teams VPC, as well as its vulnbox and thrower server.
+This module initializes a team, including its subnet within the teams VPC and its vulnbox. Each team self-hosts their own thrower outside this infrastructure.

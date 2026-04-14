@@ -52,8 +52,9 @@ Two VPCs peered together:
   - `ami.tf`: Ubuntu 24.04 AMI data source
   - `variables.tf`: Instance types, region, number of teams, admin SSH CIDR
 
-- **team** (`/team`): Per-team infrastructure (subnet, vulnbox, thrower)
+- **team** (`/team`): Per-team infrastructure (subnet, vulnbox)
   - Instantiated N times based on `num_teams` variable
+  - Note: the thrower is self-hosted by each team on their own infrastructure and is not provisioned by this module
 
 - **vpn_server** (`/vpn_server`): VPN server EC2 instance and network interface
 

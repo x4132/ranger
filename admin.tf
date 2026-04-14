@@ -26,11 +26,19 @@ resource "aws_security_group" "admin_sg" {
   }
 
   ingress {
-    description = "Allow SSH from configured CIDR"
+    description = "Allow SSH from internal CIDR (VPN/VPC)"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
     cidr_blocks = [var.admin_ssh_cidr]
+  }
+
+  ingress {
+    description = "Allow SSH from public internet"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_public_ssh_cidr]
   }
 
   tags = {
@@ -39,15 +47,30 @@ resource "aws_security_group" "admin_sg" {
 }
 
 resource "aws_instance" "admin" {
-  ami           = data.aws_ami.ubuntu.id
-  instance_type = var.router_instance_type
-  subnet_id     = aws_subnet.ranger_routers.id
-  key_name      = aws_key_pair.admin_key.key_name
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.router_instance_type
+  subnet_id                   = aws_subnet.ranger_public.id
+  key_name                    = aws_key_pair.admin_key.key_name
+  associate_public_ip_address = false
 
   vpc_security_group_ids = [aws_security_group.admin_sg.id]
 
+  user_data = templatefile("${path.module}/admin_cloud_init.yaml.tftpl", {
+    admin_pubkey = trimspace(tls_private_key.admin_key.public_key_openssh)
+  })
+  user_data_replace_on_change = true
+
   tags = {
     Name = "ranger_admin"
+  }
+}
+
+resource "aws_eip" "admin_eip" {
+  domain   = "vpc"
+  instance = aws_instance.admin.id
+
+  tags = {
+    Name = "ranger_admin_eip"
   }
 }
 
@@ -61,6 +84,11 @@ resource "local_file" "admin_private_key" {
 output "admin_private_ip" {
   description = "Private IP address of the admin instance"
   value       = aws_instance.admin.private_ip
+}
+
+output "admin_public_ip" {
+  description = "Public EIP of the admin instance"
+  value       = aws_eip.admin_eip.public_ip
 }
 
 output "admin_key_file" {

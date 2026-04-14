@@ -22,8 +22,8 @@ variable "num_teams" {
 
 variable "vulnbox_instance_type" {
   description = "Instance type for vulnboxes"
-  type = string
-  default = "t3.micro"
+  type        = string
+  default     = "t3.micro"
 }
 
 variable "router_instance_type" {
@@ -32,38 +32,38 @@ variable "router_instance_type" {
   default     = "t3.micro"
 }
 
-variable "thrower_instance_type" {
-  description = "Instance type for thrower instances"
-  type = string
-  default = "t3.micro"
-}
-
 variable "gameserver_instance_type" {
   description = "Instance type for the gameserver"
-  type = string
-  default = "t3.micro"
+  type        = string
+  default     = "t3.micro"
 }
 
 variable "vpn_instance_type" {
   description = "Instance type for the VPN instances"
-  type = string
-  default = "t3.micro"
+  type        = string
+  default     = "t3.micro"
 }
 
 variable "checker_instance_type" {
   description = "Instance type for the checker server"
-  type = string
-  default = "t3.micro"
+  type        = string
+  default     = "t3.micro"
 }
 
 variable "monitor_instance_type" {
   description = "Instance type for the monitor server"
-  type = string
-  default = "t3.micro"
+  type        = string
+  default     = "t3.micro"
 }
 
 variable "admin_ssh_cidr" {
   description = "CIDR block allowed to SSH into admin instance. Use VPC CIDR (10.50.0.0/16) to allow all VPN users, or a narrower range for admin-only VPN clients."
   type        = string
   default     = "10.50.0.0/16"
+}
+
+variable "admin_public_ssh_cidr" {
+  description = "CIDR block allowed to SSH to the admin instance from the public internet. Set to your operator IP (e.g. 1.2.3.4/32) to tighten; defaults to 0.0.0.0/0 for bootstrap."
+  type        = string
+  default     = "0.0.0.0/0"
 }
