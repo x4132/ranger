@@ -33,9 +33,15 @@ variable "router_instance_type" {
 }
 
 variable "gameserver_instance_type" {
-  description = "Instance type for the gameserver"
+  description = "Instance type for the gameserver. t3.small (2 GB) is the practical minimum: Postgres + Django + uwsgi + nginx + ctf-controller all share the box."
   type        = string
-  default     = "t3.micro"
+  default     = "t3.small"
+}
+
+variable "gameserver_admin_email" {
+  description = "Email used as the Django superuser address on the scoreboard."
+  type        = string
+  default     = "admin@ctf.internal"
 }
 
 variable "vpn_instance_type" {
@@ -46,12 +52,6 @@ variable "vpn_instance_type" {
 
 variable "checker_instance_type" {
   description = "Instance type for the checker server"
-  type        = string
-  default     = "t3.micro"
-}
-
-variable "monitor_instance_type" {
-  description = "Instance type for the monitor server"
   type        = string
   default     = "t3.micro"
 }

@@ -1,4 +1,7 @@
 .terraform
+.terraform.tfstate.lock.info
 .env
 terraform.tfstate
 terraform.tfstate.backup
+*.pem
+*.ovpn

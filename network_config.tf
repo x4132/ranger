@@ -33,6 +33,9 @@ resource "aws_subnet" "ranger_routers" {
   cidr_block = "10.50.1.0/24"
   vpc_id     = aws_vpc.ranger_main.id
 
+  # Pin AZ: t3.micro (and many other small types) are not offered in us-east-1e.
+  availability_zone = "${var.aws_region}a"
+
   tags = {
     Name = "ranger_routers"
   }
@@ -83,6 +86,18 @@ resource "aws_route_table" "ranger_public_rt" {
     vpc_peering_connection_id = aws_vpc_peering_connection.ranger_link.id
   }
 
+  # Reach VPN-tunnel-side IPs by sending them to the VPN host's ENI; only
+  # meaningful since we no longer MASQUERADE VPN→teams-VPC traffic.
+  route {
+    cidr_block           = module.vpn.vpn_cidr
+    network_interface_id = module.vpn.network_interface_id
+  }
+
+  route {
+    cidr_block           = module.vpn.vulnbox_vpn_cidr
+    network_interface_id = module.vpn.network_interface_id
+  }
+
   tags = {
     Name = "ranger_public_rt"
   }
@@ -104,6 +119,16 @@ resource "aws_route_table" "ranger_private_rt" {
   route {
     cidr_block                = aws_vpc.ranger_teams.cidr_block
     vpc_peering_connection_id = aws_vpc_peering_connection.ranger_link.id
+  }
+
+  route {
+    cidr_block           = module.vpn.vpn_cidr
+    network_interface_id = module.vpn.network_interface_id
+  }
+
+  route {
+    cidr_block           = module.vpn.vulnbox_vpn_cidr
+    network_interface_id = module.vpn.network_interface_id
   }
 
   tags = {
@@ -181,6 +206,18 @@ resource "aws_route_table" "ranger_teams_public_rt" {
 
   route {
     cidr_block                = aws_vpc.ranger_main.cidr_block
+    vpc_peering_connection_id = aws_vpc_peering_connection.ranger_link.id
+  }
+
+  # Replies to VPN clients leave teams-VPC via peering; ranger_main then routes
+  # the tunnel CIDRs to the VPN ENI.
+  route {
+    cidr_block                = module.vpn.vpn_cidr
+    vpc_peering_connection_id = aws_vpc_peering_connection.ranger_link.id
+  }
+
+  route {
+    cidr_block                = module.vpn.vulnbox_vpn_cidr
     vpc_peering_connection_id = aws_vpc_peering_connection.ranger_link.id
   }
 

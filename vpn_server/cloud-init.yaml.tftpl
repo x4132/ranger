@@ -1,11 +1,14 @@
 #cloud-config
-package_update: true
+bootcmd:
+  - [ sh, -c, 'for i in 1 2 3 4 5 6; do apt-get update && exit 0; sleep 15; done; exit 1' ]
+package_update: false
 package_upgrade: false
 packages:
   - openvpn
   - easy-rsa
   - iptables-persistent
   - openssl
+  - snapd
 
 write_files:
   - path: /etc/sysctl.d/99-openvpn.conf
@@ -20,10 +23,12 @@ write_files:
     content: |
       port ${vpn_port}
       proto udp
-      dev tun
+      dev tun-team
+      dev-type tun
       topology subnet
       server ${vpn_network} ${vpn_netmask}
       ifconfig-pool-persist /var/lib/openvpn/ipp.txt
+      client-config-dir /etc/openvpn/server/ccd-team
 %{ for r in pushed_routes ~}
       push "route ${r.network} ${r.netmask}"
 %{ endfor ~}
@@ -43,6 +48,36 @@ write_files:
       verb 3
       status /var/log/openvpn-status.log
 
+  - path: /etc/openvpn/server/vulnbox.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      port ${vulnbox_vpn_port}
+      proto udp
+      dev tun-vbox
+      dev-type tun
+      topology subnet
+      server ${vulnbox_vpn_network} ${vulnbox_vpn_netmask}
+      ifconfig-pool-persist /var/lib/openvpn/ipp-vulnbox.txt
+%{ for r in vulnbox_vpn_pushed_routes ~}
+      push "route ${r.network} ${r.netmask}"
+%{ endfor ~}
+      keepalive 10 120
+      persist-key
+      persist-tun
+      data-ciphers AES-256-GCM:AES-128-GCM
+      data-ciphers-fallback AES-256-GCM
+      auth SHA256
+      ca /etc/openvpn/server/ca.crt
+      cert /etc/openvpn/server/vulnbox-server.crt
+      key /etc/openvpn/server/vulnbox-server.key
+      dh /etc/openvpn/server/dh.pem
+      tls-crypt /etc/openvpn/server/tc-vulnbox.key
+      user nobody
+      group nogroup
+      verb 3
+      status /var/log/openvpn-vulnbox-status.log
+
   - path: /usr/local/sbin/ranger-vpn-setup.sh
     owner: root:root
     permissions: '0755'
@@ -52,48 +87,66 @@ write_files:
 
       VPN_PORT=${vpn_port}
       VPN_CIDR=${vpn_cidr}
+      VPN_NETMASK=${vpn_netmask}
+      VULNBOX_VPN_PORT=${vulnbox_vpn_port}
+      VULNBOX_VPN_CIDR=${vulnbox_vpn_cidr}
       NUM_TEAMS=${num_teams}
       PUBLIC_IP=${public_ip}
+      AWS_REGION=${aws_region}
+      BUCKET=${vulnbox_config_bucket}
+      TEAMS_VPC_CIDR=${teams_vpc_cidr}
+      MAIN_VPC_CIDR=${main_vpc_cidr}
       EASYRSA_DIR=/etc/openvpn/easy-rsa
       CLIENTS_DIR=/root/client-configs
+      CCD_TEAM_DIR=/etc/openvpn/server/ccd-team
 
       sysctl --system
-
       mkdir -p /var/lib/openvpn
+
+      # Ubuntu 24.04 dropped the awscli apt package; install via snap.
+      if ! command -v aws >/dev/null; then
+        snap install aws-cli --classic
+        ln -sf /snap/bin/aws /usr/local/bin/aws
+      fi
 
       /usr/bin/make-cadir "$EASYRSA_DIR"
       cd "$EASYRSA_DIR"
 
       export EASYRSA_BATCH=1
-      export EASYRSA_REQ_CN=ranger-ca
       ./easyrsa init-pki
-      ./easyrsa build-ca nopass
+      EASYRSA_REQ_CN=ranger-ca ./easyrsa build-ca nopass
       ./easyrsa gen-dh
       ./easyrsa build-server-full server nopass
+      ./easyrsa build-server-full vulnbox-server nopass
       /usr/sbin/openvpn --genkey secret pki/tc.key
+      /usr/sbin/openvpn --genkey secret pki/tc-vulnbox.key
 
-      install -m 0644 pki/ca.crt /etc/openvpn/server/ca.crt
-      install -m 0644 pki/issued/server.crt /etc/openvpn/server/server.crt
-      install -m 0600 pki/private/server.key /etc/openvpn/server/server.key
-      install -m 0644 pki/dh.pem /etc/openvpn/server/dh.pem
-      install -m 0600 pki/tc.key /etc/openvpn/server/tc.key
+      install -m 0644 pki/ca.crt                         /etc/openvpn/server/ca.crt
+      install -m 0644 pki/issued/server.crt              /etc/openvpn/server/server.crt
+      install -m 0600 pki/private/server.key             /etc/openvpn/server/server.key
+      install -m 0644 pki/issued/vulnbox-server.crt      /etc/openvpn/server/vulnbox-server.crt
+      install -m 0600 pki/private/vulnbox-server.key     /etc/openvpn/server/vulnbox-server.key
+      install -m 0644 pki/dh.pem                         /etc/openvpn/server/dh.pem
+      install -m 0600 pki/tc.key                         /etc/openvpn/server/tc.key
+      install -m 0600 pki/tc-vulnbox.key                 /etc/openvpn/server/tc-vulnbox.key
 
       mkdir -p "$CLIENTS_DIR"
       chmod 700 "$CLIENTS_DIR"
 
+      # $1 = client CN, $2 = server port, $3 = tls-crypt key path
       make_client() {
-        local name="$1"
+        local name="$1" port="$2" tc_path="$3"
         ./easyrsa build-client-full "$name" nopass
         local ca cert key tc
         ca=$(cat pki/ca.crt)
         cert=$(openssl x509 -in "pki/issued/$name.crt")
         key=$(cat "pki/private/$name.key")
-        tc=$(cat pki/tc.key)
+        tc=$(cat "$tc_path")
         cat > "$CLIENTS_DIR/$name.ovpn" <<OVPN
       client
       dev tun
       proto udp
-      remote $PUBLIC_IP $VPN_PORT
+      remote $PUBLIC_IP $port
       resolv-retry infinite
       nobind
       persist-key
@@ -119,20 +172,58 @@ write_files:
         chmod 600 "$CLIENTS_DIR/$name.ovpn"
       }
 
-      make_client admin
+      # Operator + per-team client configs on the team VPN. Team configs are
+      # also uploaded to S3 so the gameserver can serve them via the
+      # scoreboard's per-team downloads page. Each team's CCD entry pins them
+      # to a fixed VPN tunnel IP (10.8.<id>.10) so submission can derive the
+      # team id from the source IP.
+      install -d -m 0755 "$CCD_TEAM_DIR"
+      make_client admin "$VPN_PORT" pki/tc.key
       for i in $(seq 1 "$NUM_TEAMS"); do
-        make_client "team_$i"
+        make_client "team_$i" "$VPN_PORT" pki/tc.key
+        printf 'ifconfig-push 10.8.%s.10 %s\n' "$i" "$VPN_NETMASK" > "$CCD_TEAM_DIR/team_$i"
+        aws --region "$AWS_REGION" s3 cp \
+          "$CLIENTS_DIR/team_$i.ovpn" \
+          "s3://$BUCKET/team_$i.ovpn" \
+          --sse AES256
+      done
+
+      # Per-vulnbox client configs on the out-of-band admin VPN; upload to S3
+      # so each vulnbox can pull its own config at first boot.
+      for i in $(seq 1 "$NUM_TEAMS"); do
+        make_client "vulnbox_$i" "$VULNBOX_VPN_PORT" pki/tc-vulnbox.key
+        aws --region "$AWS_REGION" s3 cp \
+          "$CLIENTS_DIR/vulnbox_$i.ovpn" \
+          "s3://$BUCKET/vulnbox_$i.ovpn" \
+          --sse AES256
       done
 
       IFACE=$(ip -4 route show default | awk '{print $5; exit}')
       iptables -A FORWARD -i tun+ -j ACCEPT
       iptables -A FORWARD -o tun+ -j ACCEPT
-      iptables -t nat -A POSTROUTING -s "$VPN_CIDR" -o "$IFACE" -j MASQUERADE
+      # Skip NAT when the destination is one of our VPCs: the VPC route tables
+      # route the VPN tunnel CIDRs back to this host's ENI, so internal hosts
+      # (vulnboxes, admin, gameserver, checker) see the real VPN client source
+      # IP. Only NAT outbound internet traffic.
+      iptables -t nat -A POSTROUTING -s "$VPN_CIDR"         -d "$TEAMS_VPC_CIDR" -j RETURN
+      iptables -t nat -A POSTROUTING -s "$VPN_CIDR"         -d "$MAIN_VPC_CIDR"  -j RETURN
+      iptables -t nat -A POSTROUTING -s "$VULNBOX_VPN_CIDR" -d "$TEAMS_VPC_CIDR" -j RETURN
+      iptables -t nat -A POSTROUTING -s "$VULNBOX_VPN_CIDR" -d "$MAIN_VPC_CIDR"  -j RETURN
+      iptables -t nat -A POSTROUTING -s "$VPN_CIDR"         -o "$IFACE" -j MASQUERADE
+      iptables -t nat -A POSTROUTING -s "$VULNBOX_VPN_CIDR" -o "$IFACE" -j MASQUERADE
+      # Hairpin MASQUERADE for the OOB tunnel: admin reaches vulnbox via the
+      # tunnel IP (10.9.0.X), but without this the vulnbox would reply directly
+      # via the tunnel with its tunnel-side source IP and admin's TCP stack
+      # would drop the reply because the source doesn't match the SYN target.
+      # Rewriting the source to the VPN host's tun-vbox IP keeps the flow
+      # symmetric inside the tunnel.
+      iptables -t nat -A POSTROUTING -o tun-vbox -j MASQUERADE
 
       mkdir -p /etc/iptables
       iptables-save > /etc/iptables/rules.v4
 
       systemctl enable --now openvpn-server@server
+      systemctl enable --now openvpn-server@vulnbox
 
 runcmd:
   - [ bash, -lc, "/usr/local/sbin/ranger-vpn-setup.sh 2>&1 | tee /var/log/ranger-vpn-setup.log" ]

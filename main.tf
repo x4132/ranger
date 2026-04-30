@@ -21,4 +21,11 @@ module "team" {
   main_vpc_cidr         = aws_vpc.ranger_main.cidr_block
   nat_gateway_id        = aws_nat_gateway.ranger_teams_nat.id
   peering_connection_id = aws_vpc_peering_connection.ranger_link.id
+  iam_instance_profile  = aws_iam_instance_profile.vulnbox.name
+  vulnbox_config_bucket = aws_s3_bucket.vpn_configs.bucket
+  aws_region            = var.aws_region
+  admin_pubkey          = trimspace(tls_private_key.admin_key.public_key_openssh)
+  vpn_cidr              = module.vpn.vpn_cidr
+  vulnbox_vpn_cidr      = module.vpn.vulnbox_vpn_cidr
+  teams_vpc_cidr        = aws_vpc.ranger_teams.cidr_block
 }

@@ -1,80 +1,126 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code working in this repository.
 
-## Project Overview
+## Project overview
 
-Ranger is a Terraform-based infrastructure project for setting up Attack/Defense (A/D) CTF ranges on AWS. It provisions VPCs, networking, VPN servers, and per-team infrastructure for CTF competitions.
+Ranger is a Terraform-based Attack/Defense (A/D) CTF range on AWS. It
+provisions VPCs, networking, two OpenVPN endpoints (team + out-of-band
+admin), per-team vulnboxes, a gameserver running upstream `ctf-gameserver`
+(controller + submission + Django scoreboard + Postgres on a single host),
+and a checker host. The DB is auto-seeded with N teams; per-team OpenVPN
+configs land in S3 and are served to teams via the scoreboard's per-team
+downloads page.
 
 ## Requirements
 
 - Terraform >= 1.13
-- Packer (for custom AMI builds)
-- AWS credentials configured
+- AWS credentials in `.env`, loaded with `source init.sh` (or `init.fish`)
 
-## Common Commands
+## Common commands
 
 ```bash
-# Load environment variables from .env
 source init.sh
-
-# Initialize Terraform (download providers/modules)
 terraform init
-
-# Preview changes
 terraform plan
-
-# Apply infrastructure changes
 terraform apply
-
-# Destroy infrastructure
 terraform destroy
+terraform output -json team_passwords        # per-team scoreboard logins
+terraform output gameserver_admin_password   # Django superuser password
 ```
 
 ## Architecture
 
-### Network Layout
+### Networks
 
-Two VPCs peered together:
-- **ranger_main** (10.50.0.0/16): Contains public-facing infrastructure
-  - `ranger_public` subnet (10.50.0.0/25): VPN servers, internet gateway
-  - `ranger_routers` subnet (10.50.1.0/24): Internal routers
-- **ranger_teams** (10.32.0.0/16): Contains team infrastructure
-  - Each team gets a /24 subnet (10.32.X.0/24 where X = team_id)
+Two peered VPCs:
 
-### Terraform Modules
+- **ranger_main** (10.50.0.0/16) — public-facing
+  - `ranger_public` (10.50.0.0/25): VPN host, IGW
+  - `ranger_routers` (10.50.1.0/24): admin, gameserver, checker
+- **ranger_teams** (10.32.0.0/16) — team infrastructure
+  - per team: `10.32.<N>.0/24`, vulnbox at `.4`
 
-- **Root module** (`/`): Main configuration, providers, network setup, VPN, admin instance
-  - `main.tf`: AWS provider, team module instantiation
-  - `network_config.tf`: VPC, subnet, gateway, and routing configuration
-  - `vpn.tf`: VPN security group and module instantiation
-  - `admin.tf`: Administrative EC2 instance with SSH key pair
-  - `ami.tf`: Ubuntu 24.04 AMI data source
-  - `variables.tf`: Instance types, region, number of teams, admin SSH CIDR
+### VPNs
 
-- **team** (`/team`): Per-team infrastructure (subnet, vulnbox)
-  - Instantiated N times based on `num_teams` variable
-  - Note: the thrower is self-hosted by each team on their own infrastructure and is not provisioned by this module
+Two OpenVPN daemons share a single host:
 
-- **vpn_server** (`/vpn_server`): VPN server EC2 instance and network interface
+- **Team VPN** (UDP 1201, tunnel pool 10.8.0.0/16). Each `team_<N>` cert is
+  pinned to `10.8.<N>.10` via OpenVPN CCD so the submission daemon can
+  derive the team id from the source IP. One concurrent connection per
+  team — duplicate-cn is not enabled.
+- **Vulnbox-admin VPN** (UDP 1200, tunnel pool 10.9.0.0/24). Out-of-band
+  channel for organizers; vulnboxes auto-connect at boot via S3-distributed
+  client configs.
 
-### Admin Instance
+VPN→VPC traffic is **not** MASQUERADEd. VPC route tables route the tunnel
+CIDRs back to the VPN host's ENI; vulnboxes/gameserver/admin see real
+client source IPs. Only internet-bound VPN traffic is NATed.
 
-The admin instance is an EC2 instance in the `ranger_routers` subnet for administrative access and management tasks. It is accessible via SSH only through the VPN (no public IP). Access is controlled by the `admin_ssh_cidr` variable, which can be set to:
-- `10.50.0.0/16` (default): Allow SSH from all VPN users
-- A narrower range (e.g., `10.50.0.128/25`): Restrict SSH to admin-only VPN clients
+### Terraform layout
 
-The SSH private key is automatically generated and saved to `admin_key.pem` in the project root with 0600 permissions.
+- `main.tf` — provider, team module instantiation
+- `network_config.tf` — VPCs, subnets, gateways, route tables (including the
+  VPN-tunnel-CIDR routes that replace MASQUERADE)
+- `vpn.tf`, `vpn_server/` — OpenVPN host + module
+- `admin.tf`, `admin_cloud_init.yaml.tftpl` — bastion host with operator
+  scripts (`team-ssh`, `team-restart-service`, `fetch-team-logs`,
+  `presign-vpn`)
+- `gameserver.tf`, `gameserver_cloud_init.yaml.tftpl` — ctf-gameserver host
+  (built from source on first boot; user_data is gzipped because it exceeds
+  the 16KB raw limit)
+- `checker.tf`, `checker_cloud_init.yaml.tftpl` — checker host (deps only;
+  scripts come with services)
+- `team/` — per-team subnet, route table, vulnbox
+- `dns.tf` — internal `ctf.internal` zone + optional public scoreboard A
+  record (only when `public_zone_name` is set)
+- `iam.tf` — per-role IAM (admin, gameserver, vpn_server, vulnbox, ec2_ssm)
+- `s3.tf` — `ranger-vpn-configs-*` bucket for VPN config distribution
+- `flow_logs.tf` — VPC flow logs to CloudWatch
 
-### Key Variables
+### Gameserver bootstrap
+
+Cloud-init builds the upstream `ctf-gameserver` Debian package from source,
+pinned to `cbc85804ded8827bd46c464088b4b0158eace26b` (last commit before the
+pyproject migration that requires Python 3.13). Then:
+
+- Postgres role/db, Django migrate, superuser
+- `/usr/local/sbin/ranger-seed-db.py` seeds N team users + `Team` rows
+  (with `net_number = i`), the `GameControl` singleton (tick_duration 120s,
+  null start/end), and the `TeamDownload(filename="openvpn.ovpn")` row
+- Pulls `team_<i>.ovpn` from S3 to `/var/lib/ctf-gameserver/team-downloads/<i>/openvpn.ovpn`
+
+The submission daemon's `CTF_TEAMREGEX` is
+`^(?:10\.32|10\.8)\.([0-9]+)\.[0-9]+$` — matches both vulnbox source
+(10.32.X.4) and team-VPN client source (10.8.X.10) and captures the team
+id.
+
+### Operator scripts on admin
+
+The admin instance gets the operator SSH private key (in user_data) and
+these wrappers in `/usr/local/bin/`:
+
+- `team-ssh N [cmd...]` — SSH to team N's vulnbox
+- `team-restart-service N SERVICE` — restart a unit (or `compose` for all
+  docker compose stacks under `/opt`)
+- `fetch-team-logs N [DEST]` — rsync `/var/log` from team N's vulnbox
+- `presign-vpn N [SECONDS]` — presigned S3 URL for `team_N.ovpn`,
+  for OOB distribution before teams are on the VPN
+
+## Key variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `num_teams` | 4 | Number of teams to provision |
-| `aws_region` | us-east-1 | AWS region |
-| `*_instance_type` | t3.micro | Various instance types (vulnbox, router, vpn, etc.) |
-| `admin_ssh_cidr` | 10.50.0.0/16 | CIDR block allowed to SSH into admin instance (VPC CIDR or narrower range for admin-only VPN) |
+| `num_teams` | `4` | Number of teams |
+| `aws_region` | `us-east-1` | AWS region |
+| `*_instance_type` | `t3.micro` (gameserver: `t3.small`) | Instance sizing |
+| `admin_ssh_cidr` | `10.50.0.0/16` | Operator SSH ingress on admin (on top of VPN tunnel CIDRs and `admin_public_ssh_cidr`) |
+| `admin_public_ssh_cidr` | `0.0.0.0/0` | Public SSH ingress on admin — tighten to your operator IP |
+| `gameserver_admin_email` | `admin@ctf.internal` | Django superuser email |
 
-### Environment Configuration
+## What's not yet provisioned
 
-Create a `.env` file for AWS credentials and other environment variables. Load with `source init.sh`.
+- Vulnerable services + their checker scripts (the vulnbox boots stock
+  Ubuntu with docker; service bundles + checker units are deferred)
+- Postgres backup
+- Monitoring (Prometheus/Grafana)

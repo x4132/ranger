@@ -1,0 +1,375 @@
+#cloud-config
+# End-to-end install of upstream ctf-gameserver (FAUST) on a single Ubuntu 24.04 host.
+#
+# Note: a fresh NAT gateway sometimes drops the very first apt-get update,
+# which makes cloud-init's package install module fail without retry. The
+# bootcmd below runs before packages are evaluated and retries apt-get update
+# until it succeeds; the package list is then evaluated against a populated
+# index.
+# Reference: https://github.com/fausecteam/ctf-gameserver
+#
+# What this brings up:
+#   - PostgreSQL (local, default cluster, no encryption-at-rest beyond root EBS)
+#   - ctf-gameserver Debian package built from source on first boot
+#   - Django scoreboard via uWSGI behind nginx on :80 (and :443 if cert dropped later)
+#   - ctf-controller + ctf-submission@31337 systemd services
+#
+# Replacing this instance wipes the database — that's intentional for the range.
+bootcmd:
+  - [ sh, -c, 'for i in 1 2 3 4 5 6; do apt-get update && exit 0; sleep 15; done; exit 1' ]
+package_update: false
+package_upgrade: false
+packages:
+  - openssh-server
+  - postgresql
+  - postgresql-contrib
+  - nginx
+  - uwsgi
+  - uwsgi-plugin-python3
+  - git
+  - devscripts
+  - dpkg-dev
+  - equivs
+  - debhelper
+  - dh-python
+  - curl
+  - unzip
+  - python3
+  - python3-all
+  - python3-pip
+  - python3-setuptools
+  - python3-argon2
+  - python3-django
+  - python3-markdown
+  - python3-pil
+  - python3-tz
+  - python3-configargparse
+  - python3-prometheus-client
+  - python3-psycopg2
+  - python3-requests
+  - python3-systemd
+  - libjs-jquery
+  - iputils-ping
+  - sudo
+  - snapd
+
+ssh_authorized_keys:
+  - ${admin_pubkey}
+
+write_files:
+  - path: /etc/ctf-gameserver/controller.env
+    owner: root:root
+    permissions: '0640'
+    content: |
+      CTF_DBNAME=gameserver
+      CTF_DBUSER=gameserver
+      CTF_DBPASSWORD=${postgres_password}
+      CTF_DBHOST=127.0.0.1
+
+  - path: /etc/ctf-gameserver/submission.env
+    owner: root:root
+    permissions: '0640'
+    content: |
+      CTF_DBNAME=gameserver
+      CTF_DBUSER=gameserver
+      CTF_DBPASSWORD=${postgres_password}
+      CTF_DBHOST=127.0.0.1
+      CTF_FLAGSECRET=${flag_secret}
+      # Match either a vulnbox source (10.32.<id>.4) or a team-VPN client
+      # source (10.8.<id>.10, pinned by OpenVPN CCD); capture the team id.
+      CTF_TEAMREGEX=^(?:10\.32|10\.8)\.([0-9]+)\.[0-9]+$
+      CTF_LISTEN=0.0.0.0:31337
+
+  - path: /etc/ctf-gameserver/checkermaster.env
+    owner: root:root
+    permissions: '0640'
+    content: |
+      CTF_DBNAME=gameserver
+      CTF_DBUSER=gameserver
+      CTF_DBPASSWORD=${postgres_password}
+      CTF_DBHOST=127.0.0.1
+      CTF_FLAGSECRET=${flag_secret}
+      CTF_SUDOUSER=ctf-checkerrunner
+      CTF_IPPATTERN=${team_ip_pattern}
+
+  # uwsgi runs as www-data and needs to read this file. Group-readable only;
+  # ownership is fixed up in the bootstrap script (write_files runs before
+  # the package that creates the www-data group via nginx, in some boot
+  # orderings).
+  - path: /etc/ctf-gameserver/web/prod_settings.py
+    owner: root:root
+    permissions: '0644'
+    content: |
+      from ctf_gameserver.web.base_settings import *  # noqa: F401,F403
+
+      SECRET_KEY = "${django_secret_key}"
+      DEBUG = False
+      ALLOWED_HOSTS = ["${scoreboard_hostname}", "localhost", "127.0.0.1"]
+
+      DATABASES = {
+          "default": {
+              "ENGINE": "django.db.backends.postgresql",
+              "NAME": "gameserver",
+              "USER": "gameserver",
+              "PASSWORD": "${postgres_password}",
+              "HOST": "127.0.0.1",
+              "PORT": "5432",
+              "CONN_MAX_AGE": 60,
+          }
+      }
+
+      # Required by ctf_gameserver.web.middleware.
+      CSP_POLICIES = {
+          "base-uri": ["'self'"],
+          "connect-src": ["'self'"],
+          "form-action": ["'self'"],
+          "object-src": ["'none'"],
+          "script-src": ["'self'"],
+          "style-src": ["'self'"],
+      }
+
+      HTTPS = False
+      # Avoid memcached dependency; locmem cache is fine for a single-process
+      # scoreboard. Sessions are persisted in the DB instead of cached_db.
+      CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+      SESSION_ENGINE = "django.contrib.sessions.backends.db"
+
+      TIME_ZONE = "UTC"
+      MEDIA_ROOT = "/var/www/gameserver_uploads"
+      TEAM_DOWNLOADS_ROOT = "/var/lib/ctf-gameserver/team-downloads"
+      DEFAULT_FROM_EMAIL = "${django_admin_email}"
+
+  - path: /etc/uwsgi/apps-available/ctf-gameserver.ini
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [uwsgi]
+      plugins = python3
+      uwsgi-socket = /run/uwsgi/app/ctf-gameserver/socket
+      chmod-socket = 660
+      chown-socket = www-data:www-data
+      python-path = /etc/ctf-gameserver/web
+      module = ctf_gameserver.web.wsgi:application
+      env = DJANGO_SETTINGS_MODULE=prod_settings
+      master = true
+      processes = 4
+      vacuum = true
+      die-on-term = true
+      logto = /var/log/uwsgi/app/ctf-gameserver.log
+
+  - path: /etc/nginx/sites-available/ctf-gameserver
+    owner: root:root
+    permissions: '0644'
+    content: |
+      server {
+          listen 80 default_server;
+          listen [::]:80 default_server;
+          server_name ${scoreboard_hostname} _;
+
+          client_max_body_size 16m;
+
+          location /static/admin/ {
+              root /usr/lib/python3/dist-packages/django/contrib/admin/;
+          }
+          location /static/ {
+              alias /usr/lib/python3/dist-packages/ctf_gameserver/web/static/;
+          }
+          location /uploads/ {
+              alias /var/www/gameserver_uploads/;
+              add_header Content-Security-Policy "default-src 'none'";
+          }
+          location = /robots.txt {
+              alias /usr/lib/python3/dist-packages/ctf_gameserver/web/static/robots.txt;
+          }
+
+          location / {
+              include uwsgi_params;
+              uwsgi_pass unix:/run/uwsgi/app/ctf-gameserver/socket;
+          }
+      }
+
+  - path: /usr/local/sbin/ranger-seed-db.py
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env python3
+      """
+      Idempotently seeds N team users + Team rows, the GameControl singleton, and
+      a TeamDownload row for the per-team VPN config. Invoked once from the
+      gameserver bootstrap after Django migrations.
+      """
+      import json
+      import os
+      import sys
+
+      sys.path.insert(0, "/etc/ctf-gameserver/web")
+      os.environ.setdefault("DJANGO_SETTINGS_MODULE", "prod_settings")
+
+      import django
+      django.setup()
+
+      from django.contrib.auth import get_user_model
+      from ctf_gameserver.web.registration.models import Team, TeamDownload
+      from ctf_gameserver.web.scoring.models import GameControl
+
+      NUM_TEAMS = ${num_teams}
+      TICK_DURATION = ${tick_duration}
+      TEAM_PASSWORDS = json.loads(r'''${team_passwords_json}''')
+
+      User = get_user_model()
+
+      for i in range(1, NUM_TEAMS + 1):
+          username = f"team_{i}"
+          email = f"team_{i}@ctf.internal"
+          user, _ = User.objects.get_or_create(username=username, defaults={"email": email})
+          user.email = email
+          user.is_active = True
+          user.set_password(TEAM_PASSWORDS[i - 1])
+          user.save()
+          Team.objects.update_or_create(
+              user=user,
+              defaults={
+                  "net_number": i,
+                  "informal_email": email,
+                  "country": "",
+                  "affiliation": "",
+                  "nop_team": False,
+              },
+          )
+
+      gc = GameControl.get_instance()
+      gc.competition_name = "Ranger Range"
+      gc.tick_duration = TICK_DURATION
+      gc.flag_prefix = "RANGER_"
+      gc.start = None
+      gc.end = None
+      gc.services_public = None
+      gc.min_net_number = 1
+      gc.max_net_number = NUM_TEAMS
+      gc.registration_open = False
+      gc.save()
+
+      TeamDownload.objects.update_or_create(
+          filename="openvpn.ovpn",
+          defaults={"description": "OpenVPN config for the team VPN."},
+      )
+
+      print(f"Seeded {NUM_TEAMS} teams; tick_duration={TICK_DURATION}s; GameControl saved.")
+
+  - path: /usr/local/sbin/ranger-gameserver-bootstrap.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # One-shot installer for ctf-gameserver. Idempotent — safe to rerun.
+      set -euxo pipefail
+
+      DBNAME=gameserver
+      DBUSER=gameserver
+      DBPASS='${postgres_password}'
+      ADMIN_USER=admin
+      ADMIN_EMAIL='${django_admin_email}'
+      ADMIN_PASS='${django_admin_password}'
+      SRC_DIR=/opt/ctf-gameserver
+      UPLOADS_DIR=/var/www/gameserver_uploads
+      TEAM_DL_ROOT=/var/lib/ctf-gameserver/team-downloads
+      AWS_REGION='${aws_region}'
+      VPN_BUCKET='${vulnbox_config_bucket}'
+      NUM_TEAMS=${num_teams}
+      # Pinned to the last commit before the pyproject.toml migration
+      # (3725a4e). After 3725a4e, upstream uses PEP 639 license strings and
+      # requires-python >= 3.13, neither of which Ubuntu 24.04's stock
+      # python3-setuptools / python3.12 supports.
+      CTF_GAMESERVER_REF=cbc85804ded8827bd46c464088b4b0158eace26b
+
+      install -d -o www-data -g www-data "$UPLOADS_DIR"
+      install -d -m 0755 "$TEAM_DL_ROOT"
+      install -d -m 0755 /run/uwsgi/app/ctf-gameserver
+      chown www-data:www-data /run/uwsgi/app/ctf-gameserver
+
+      # Ubuntu 24.04 dropped the awscli apt package; install via snap to pull
+      # team VPN configs from S3.
+      if ! command -v aws >/dev/null; then
+        snap install aws-cli --classic
+        ln -sf /snap/bin/aws /usr/local/bin/aws
+      fi
+
+      # Build the .deb if not already installed.
+      if ! dpkg -s ctf-gameserver >/dev/null 2>&1; then
+        if [ ! -d "$SRC_DIR" ]; then
+          git clone https://github.com/fausecteam/ctf-gameserver.git "$SRC_DIR"
+        fi
+        cd "$SRC_DIR"
+        git -c advice.detachedHead=false checkout "$CTF_GAMESERVER_REF"
+        # mk-build-deps wants the control file present; --install pulls deps via apt.
+        DEBIAN_FRONTEND=noninteractive mk-build-deps --install --tool 'apt-get -y --no-install-recommends' debian/control
+        dpkg-buildpackage --unsigned-changes --unsigned-buildinfo -b
+        # --force-confold: the .deb ships /etc/ctf-gameserver/*.env templates
+        # that would otherwise prompt to overwrite our cloud-init versions.
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          -o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef \
+          ../ctf-gameserver_*_all.deb
+      fi
+
+      # uwsgi (www-data) needs to read prod_settings.py.
+      chown root:www-data /etc/ctf-gameserver/web/prod_settings.py
+      chmod 0640 /etc/ctf-gameserver/web/prod_settings.py
+
+      # Postgres role + db. createuser/createdb are idempotent via SELECT-then-create.
+      sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='$DBUSER'" | grep -q 1 \
+        || sudo -u postgres psql -c "CREATE ROLE $DBUSER LOGIN PASSWORD '$DBPASS'"
+      sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DBNAME'" | grep -q 1 \
+        || sudo -u postgres createdb -O "$DBUSER" "$DBNAME"
+
+      # Apply Django schema. PYTHONPATH points at our prod_settings.py.
+      export PYTHONPATH=/etc/ctf-gameserver/web
+      export DJANGO_SETTINGS_MODULE=prod_settings
+      django-admin migrate --noinput
+
+      # Create the superuser if it doesn't already exist.
+      django-admin shell <<PY
+      from django.contrib.auth import get_user_model
+      U = get_user_model()
+      if not U.objects.filter(username="$ADMIN_USER").exists():
+          U.objects.create_superuser("$ADMIN_USER", "$ADMIN_EMAIL", "$ADMIN_PASS")
+      PY
+
+      # Seed N team users, Team rows, GameControl, and the TeamDownload row.
+      python3 /usr/local/sbin/ranger-seed-db.py
+
+      # Pull each team_<i>.ovpn from the VPN-config bucket into the team's
+      # downloads directory. The VPN server uploads these during its own
+      # cloud-init, so retry until they show up.
+      for i in $(seq 1 "$NUM_TEAMS"); do
+        TEAM_DIR="$TEAM_DL_ROOT/$i"
+        install -d -m 0755 "$TEAM_DIR"
+        for attempt in $(seq 1 60); do
+          if aws --region "$AWS_REGION" s3 cp \
+              "s3://$VPN_BUCKET/team_$i.ovpn" \
+              "$TEAM_DIR/openvpn.ovpn"; then
+            break
+          fi
+          echo "waiting for team_$i.ovpn in s3://$VPN_BUCKET (attempt $attempt)"
+          sleep 10
+        done
+        test -s "$TEAM_DIR/openvpn.ovpn"
+        chmod 0644 "$TEAM_DIR/openvpn.ovpn"
+      done
+
+      # Wire uwsgi vhost + nginx site if not already linked.
+      ln -sf /etc/uwsgi/apps-available/ctf-gameserver.ini /etc/uwsgi/apps-enabled/ctf-gameserver.ini
+      ln -sf /etc/nginx/sites-available/ctf-gameserver /etc/nginx/sites-enabled/ctf-gameserver
+      rm -f /etc/nginx/sites-enabled/default
+
+      systemctl daemon-reload
+      systemctl enable --now postgresql nginx uwsgi
+      systemctl restart uwsgi nginx
+      systemctl enable --now ctf-controller.service
+      systemctl enable --now ctf-submission@31337.service
+
+      touch /var/lib/ranger-gameserver-bootstrapped
+
+runcmd:
+  - [ systemctl, enable, --now, ssh ]
+  - [ systemctl, enable, --now, postgresql ]
+  - [ bash, /usr/local/sbin/ranger-gameserver-bootstrap.sh ]

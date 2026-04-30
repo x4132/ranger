@@ -20,6 +20,16 @@ resource "aws_route_table" "team_rt" {
     vpc_peering_connection_id = var.peering_connection_id
   }
 
+  route {
+    cidr_block                = var.vpn_cidr
+    vpc_peering_connection_id = var.peering_connection_id
+  }
+
+  route {
+    cidr_block                = var.vulnbox_vpn_cidr
+    vpc_peering_connection_id = var.peering_connection_id
+  }
+
   tags = {
     Name = "ranger_team_${var.team_id}_rt"
   }
@@ -69,11 +79,21 @@ resource "aws_security_group" "vulnbox_sg" {
   }
 
   ingress {
-    description = "Allow traffic from main VPC (admin, VPN)"
+    description = "Allow traffic from main VPC (admin, gameserver, checker)"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = [var.main_vpc_cidr]
+  }
+
+  # Without MASQUERADE for VPN→teams-VPC, traffic from VPN clients arrives
+  # with their tunnel IP as source. Allow it directly.
+  ingress {
+    description = "Allow traffic from team VPN and vulnbox-admin VPN clients"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpn_cidr, var.vulnbox_vpn_cidr]
   }
 
   ingress {
@@ -84,19 +104,40 @@ resource "aws_security_group" "vulnbox_sg" {
     cidr_blocks = [var.cidr_block]
   }
 
+  # Peer teams attacking through their own vulnbox arrive with a 10.32.X.4
+  # source IP. Tighten to specific service ports once services exist.
+  ingress {
+    description = "Allow attacks from peer team subnets"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.teams_vpc_cidr]
+  }
+
   tags = {
     Name = "ranger_team_${var.team_id}_vulnbox_sg"
   }
 }
 
 resource "aws_instance" "vulnbox" {
-  ami                         = var.ami
-  instance_type               = var.instance_type
-  subnet_id                   = aws_subnet.ranger_team_subnets.id
+  ami           = var.ami
+  instance_type = var.instance_type
+  subnet_id     = aws_subnet.ranger_team_subnets.id
+  # .0–.3 and .255 are AWS-reserved in every subnet, so .4 is the lowest usable.
+  private_ip                  = cidrhost(var.cidr_block, 4)
   associate_public_ip_address = false
   key_name                    = aws_key_pair.vulnbox_key.key_name
+  iam_instance_profile        = var.iam_instance_profile
 
   vpc_security_group_ids = [aws_security_group.vulnbox_sg.id]
+
+  user_data = templatefile("${path.module}/vulnbox_cloud_init.yaml.tftpl", {
+    team_id               = var.team_id
+    vulnbox_config_bucket = var.vulnbox_config_bucket
+    aws_region            = var.aws_region
+    admin_pubkey          = var.admin_pubkey
+  })
+  user_data_replace_on_change = true
 
   tags = {
     Name = "ranger_team_${var.team_id}_vulnbox"
