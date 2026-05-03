@@ -63,10 +63,19 @@ write_files:
 
       mkdir -p /etc/openvpn/client
 
-      # Ubuntu 24.04 dropped the awscli apt package; install via snap.
+      # Ubuntu 24.04 dropped the awscli apt package, and snap routes through
+      # the snap store which has been intermittently unreachable from this VPC's
+      # NAT path. Use the AWS-hosted bundled installer instead, with a retry.
       if ! command -v aws >/dev/null; then
-        snap install aws-cli --classic
-        ln -sf /snap/bin/aws /usr/local/bin/aws
+        for attempt in 1 2 3 4 5; do
+          if curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip; then
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install
+            rm -rf /tmp/aws /tmp/awscliv2.zip
+            break
+          fi
+          sleep 10
+        done
       fi
 
       for i in $(seq 1 60); do

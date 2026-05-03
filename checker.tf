@@ -37,13 +37,17 @@ resource "aws_instance" "checker" {
   instance_type               = var.checker_instance_type
   subnet_id                   = aws_subnet.ranger_routers.id
   key_name                    = aws_key_pair.admin_key.key_name
-  iam_instance_profile        = aws_iam_instance_profile.ec2_ssm.name
+  iam_instance_profile        = aws_iam_instance_profile.checker.name
   associate_public_ip_address = false
 
   vpc_security_group_ids = [aws_security_group.checker_sg.id]
 
   user_data = templatefile("${path.module}/checker_cloud_init.yaml.tftpl", {
-    admin_pubkey = trimspace(tls_private_key.admin_key.public_key_openssh)
+    admin_pubkey          = trimspace(tls_private_key.admin_key.public_key_openssh)
+    postgres_password     = random_password.postgres_password.result
+    flag_secret           = base64encode(random_password.flag_secret.result)
+    gameserver_private_ip = aws_instance.gameserver.private_ip
+    team_ip_pattern       = "10.32.%s.4"
   })
   user_data_replace_on_change = true
 

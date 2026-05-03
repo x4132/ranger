@@ -287,11 +287,19 @@ write_files:
       install -d -m 0755 /run/uwsgi/app/ctf-gameserver
       chown www-data:www-data /run/uwsgi/app/ctf-gameserver
 
-      # Ubuntu 24.04 dropped the awscli apt package; install via snap to pull
-      # team VPN configs from S3.
+      # Ubuntu 24.04 dropped the awscli apt package, and snap routes through
+      # the snap store which has been intermittently unreachable from this VPC's
+      # NAT path. Use the AWS-hosted bundled installer instead, with a retry.
       if ! command -v aws >/dev/null; then
-        snap install aws-cli --classic
-        ln -sf /snap/bin/aws /usr/local/bin/aws
+        for attempt in 1 2 3 4 5; do
+          if curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip; then
+            unzip -q /tmp/awscliv2.zip -d /tmp
+            /tmp/aws/install
+            rm -rf /tmp/aws /tmp/awscliv2.zip
+            break
+          fi
+          sleep 10
+        done
       fi
 
       # Build the .deb if not already installed.
@@ -320,6 +328,23 @@ write_files:
         || sudo -u postgres psql -c "CREATE ROLE $DBUSER LOGIN PASSWORD '$DBPASS'"
       sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DBNAME'" | grep -q 1 \
         || sudo -u postgres createdb -O "$DBUSER" "$DBNAME"
+
+      # Allow the checker host to reach Postgres over the ranger_routers
+      # subnet — listen on all interfaces and allow scram auth from
+      # 10.50.1.0/24. SG already pins this to the checker SG ref.
+      PG_VER=$(ls /etc/postgresql/ | sort -n | tail -1)
+      PG_CONF=/etc/postgresql/$PG_VER/main/postgresql.conf
+      PG_HBA=/etc/postgresql/$PG_VER/main/pg_hba.conf
+      if ! grep -qE "^listen_addresses\s*=\s*'\*'" "$PG_CONF"; then
+        sed -i "s/^#\?listen_addresses.*/listen_addresses = '*'/" "$PG_CONF"
+      fi
+      if ! grep -q "ranger_checker_access" "$PG_HBA"; then
+        cat >>"$PG_HBA" <<HBA
+# ranger_checker_access — checker host on ranger_routers
+host    $DBNAME    $DBUSER    10.50.1.0/24    scram-sha-256
+HBA
+      fi
+      systemctl restart postgresql
 
       # Apply Django schema. PYTHONPATH points at our prod_settings.py.
       export PYTHONPATH=/etc/ctf-gameserver/web

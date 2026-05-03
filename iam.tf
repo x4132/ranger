@@ -157,6 +157,51 @@ resource "aws_iam_instance_profile" "admin" {
   role = aws_iam_role.admin.name
 }
 
+# Checker role: base + read service tarballs from S3.
+resource "aws_iam_role" "checker" {
+  name               = "ranger_checker"
+  assume_role_policy = data.aws_iam_policy_document.ec2_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "checker_ssm_core" {
+  role       = aws_iam_role.checker.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_role_policy_attachment" "checker_cwagent" {
+  role       = aws_iam_role.checker.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
+data "aws_iam_policy_document" "checker_s3" {
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.vpn_configs.arn}/services/*"]
+  }
+
+  statement {
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.vpn_configs.arn]
+
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["services/*"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "checker_s3" {
+  name   = "ranger_checker_s3"
+  role   = aws_iam_role.checker.id
+  policy = data.aws_iam_policy_document.checker_s3.json
+}
+
+resource "aws_iam_instance_profile" "checker" {
+  name = "ranger_checker"
+  role = aws_iam_role.checker.name
+}
+
 resource "aws_iam_role_policy" "vpn_server_s3" {
   name   = "ranger_vpn_server_s3"
   role   = aws_iam_role.vpn_server.id
@@ -190,6 +235,7 @@ data "aws_iam_policy_document" "vulnbox_s3" {
     ]
     resources = [
       "${aws_s3_bucket.vpn_configs.arn}/vulnbox_*.ovpn",
+      "${aws_s3_bucket.vpn_configs.arn}/services/*",
     ]
   }
 
@@ -200,7 +246,7 @@ data "aws_iam_policy_document" "vulnbox_s3" {
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["vulnbox_*"]
+      values   = ["vulnbox_*", "services/*"]
     }
   }
 }

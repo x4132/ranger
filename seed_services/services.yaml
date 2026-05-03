@@ -1,0 +1,12 @@
+# Currently a placeholder — seed_services discovers everything under
+# ../services/ that has a metadata.yml. Use this file to disable specific
+# services or carry per-service overrides as the deploy logic grows.
+#
+# Example shape (not yet honored by seed.py):
+#
+#   services:
+#     - slug: asm_chat
+#       enabled: true
+#     - slug: ghost
+#       enabled: false
+#       reason: native systemd install not implemented
