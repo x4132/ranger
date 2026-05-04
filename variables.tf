@@ -23,7 +23,7 @@ variable "num_teams" {
 variable "vulnbox_instance_type" {
   description = "Instance type for vulnboxes"
   type        = string
-  default     = "t3.micro"
+  default     = "t3.xlarge"
 }
 
 variable "router_instance_type" {

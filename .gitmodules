@@ -1,0 +1,15 @@
+[submodule "services/faustctf-2021-veighty-machinery"]
+	path = services/faustctf-2021-veighty-machinery
+	url = https://github.com/fausecteam/faustctf-2021-veighty-machinery.git
+[submodule "services/faustctf-2022-fittyfit"]
+	path = services/faustctf-2022-fittyfit
+	url = https://github.com/fausecteam/faustctf-2022-fittyfit.git
+[submodule "services/faustctf-2022-ghost"]
+	path = services/faustctf-2022-ghost
+	url = https://github.com/fausecteam/faustctf-2022-ghost.git
+[submodule "services/faustctf-2024-asm_chat"]
+	path = services/faustctf-2024-asm_chat
+	url = https://github.com/fausecteam/faustctf-2024-asm_chat.git
+[submodule "services/faustctf-2025-evoting"]
+	path = services/faustctf-2025-evoting
+	url = https://github.com/fausecteam/faustctf-2025-evoting.git

@@ -107,7 +107,7 @@ write_files:
 
       SECRET_KEY = "${django_secret_key}"
       DEBUG = False
-      ALLOWED_HOSTS = ["${scoreboard_hostname}", "localhost", "127.0.0.1"]
+      ALLOWED_HOSTS = ["*"]
 
       DATABASES = {
           "default": {
@@ -342,10 +342,10 @@ write_files:
         sed -i "s/^#\?listen_addresses.*/listen_addresses = '*'/" "$PG_CONF"
       fi
       if ! grep -q "ranger_checker_access" "$PG_HBA"; then
-        cat >>"$PG_HBA" <<HBA
-# ranger_checker_access — checker host on ranger_routers
-host    $DBNAME    $DBUSER    10.50.1.0/24    scram-sha-256
-HBA
+        {
+          echo "# ranger_checker_access — checker host on ranger_routers"
+          echo "host    $DBNAME    $DBUSER    10.50.1.0/24    scram-sha-256"
+        } >>"$PG_HBA"
       fi
       systemctl restart postgresql
 
