@@ -48,6 +48,7 @@ resource "aws_instance" "checker" {
     flag_secret           = base64encode(random_password.flag_secret.result)
     gameserver_private_ip = aws_instance.gameserver.private_ip
     team_ip_pattern       = "10.32.%s.4"
+    extra_authorized_keys = var.extra_authorized_keys
   })
   user_data_replace_on_change = true
 

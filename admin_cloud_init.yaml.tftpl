@@ -10,6 +10,9 @@ packages:
 
 ssh_authorized_keys:
   - ${admin_pubkey}
+%{ for k in extra_authorized_keys ~}
+  - ${k}
+%{ endfor ~}
 
 write_files:
   # Operator key, copied into the bastion so admin can SSH onward to vulnboxes,

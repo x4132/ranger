@@ -67,3 +67,9 @@ variable "admin_public_ssh_cidr" {
   type        = string
   default     = "0.0.0.0/0"
 }
+
+variable "extra_authorized_keys" {
+  description = "Additional SSH public keys appended to authorized_keys on admin, gameserver, checker, and vulnboxes (alongside the auto-generated operator key). One full line per entry, e.g. \"ssh-ed25519 AAAA... operator@laptop\"."
+  type        = list(string)
+  default     = []
+}

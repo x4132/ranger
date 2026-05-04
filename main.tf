@@ -25,6 +25,7 @@ module "team" {
   vulnbox_config_bucket = aws_s3_bucket.vpn_configs.bucket
   aws_region            = var.aws_region
   admin_pubkey          = trimspace(tls_private_key.admin_key.public_key_openssh)
+  extra_authorized_keys = var.extra_authorized_keys
   vpn_cidr              = module.vpn.vpn_cidr
   vulnbox_vpn_cidr      = module.vpn.vulnbox_vpn_cidr
   teams_vpc_cidr        = aws_vpc.ranger_teams.cidr_block

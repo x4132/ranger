@@ -32,9 +32,15 @@ users:
     lock_passwd: false
     ssh_authorized_keys:
       - ${admin_pubkey}
+%{ for k in extra_authorized_keys ~}
+      - ${k}
+%{ endfor ~}
 
 ssh_authorized_keys:
   - ${admin_pubkey}
+%{ for k in extra_authorized_keys ~}
+  - ${k}
+%{ endfor ~}
 
 write_files:
   - path: /etc/ssh/sshd_config.d/99-ranger.conf

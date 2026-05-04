@@ -126,6 +126,7 @@ resource "aws_instance" "gameserver" {
     vulnbox_config_bucket = aws_s3_bucket.vpn_configs.bucket
     tick_duration         = 120
     team_passwords_json   = jsonencode([for p in random_password.team_password : p.result])
+    extra_authorized_keys = var.extra_authorized_keys
   }))
   user_data_replace_on_change = true
 

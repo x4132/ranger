@@ -43,6 +43,9 @@ packages:
 
 ssh_authorized_keys:
   - ${admin_pubkey}
+%{ for k in extra_authorized_keys ~}
+  - ${k}
+%{ endfor ~}
 
 write_files:
   # Master config — common to every ctf-checkermaster@<slug> instance.

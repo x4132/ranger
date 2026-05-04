@@ -136,6 +136,7 @@ resource "aws_instance" "vulnbox" {
     vulnbox_config_bucket = var.vulnbox_config_bucket
     aws_region            = var.aws_region
     admin_pubkey          = var.admin_pubkey
+    extra_authorized_keys = var.extra_authorized_keys
   })
   user_data_replace_on_change = true
 

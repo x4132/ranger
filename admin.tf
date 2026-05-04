@@ -67,10 +67,11 @@ resource "aws_instance" "admin" {
   vpc_security_group_ids = [aws_security_group.admin_sg.id]
 
   user_data = templatefile("${path.module}/admin_cloud_init.yaml.tftpl", {
-    admin_pubkey       = trimspace(tls_private_key.admin_key.public_key_openssh)
-    admin_private_key  = tls_private_key.admin_key.private_key_openssh
-    vpn_configs_bucket = aws_s3_bucket.vpn_configs.bucket
-    aws_region         = var.aws_region
+    admin_pubkey          = trimspace(tls_private_key.admin_key.public_key_openssh)
+    admin_private_key     = tls_private_key.admin_key.private_key_openssh
+    vpn_configs_bucket    = aws_s3_bucket.vpn_configs.bucket
+    aws_region            = var.aws_region
+    extra_authorized_keys = var.extra_authorized_keys
   })
   user_data_replace_on_change = true
 

@@ -63,6 +63,12 @@ variable "admin_pubkey" {
   type        = string
 }
 
+variable "extra_authorized_keys" {
+  description = "Additional SSH public keys to install on the vulnbox alongside admin_pubkey."
+  type        = list(string)
+  default     = []
+}
+
 variable "vpn_cidr" {
   description = "Team-VPN tunnel CIDR. Routed back via the peering connection so vulnboxes see real VPN client source IPs."
   type        = string
