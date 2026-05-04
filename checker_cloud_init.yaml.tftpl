@@ -123,6 +123,13 @@ write_files:
 
       install -d -m 0755 /etc/ctf-gameserver/checker
       install -d -m 0755 /opt/checkers
+
+      # The systemd drop-in sets WorkingDirectory=/var/lib/ctf-checkerrunner
+      # (mode 0750, owner ctf-checkerrunner). Without this membership, the
+      # unit runs as ctf-checkermaster, fails chdir, and crashloops with
+      # status=200/CHDIR before the master process ever starts.
+      usermod -aG ctf-checkerrunner ctf-checkermaster
+
       systemctl daemon-reload
       touch /var/lib/ranger-checker-bootstrapped
 
