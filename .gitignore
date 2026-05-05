@@ -6,3 +6,5 @@ terraform.tfstate.backup
 *.pem
 *.ovpn
 *.tfvars
+__pycache__/
+*.pyc

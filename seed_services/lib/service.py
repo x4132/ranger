@@ -22,6 +22,8 @@ class Service:
     checker_pip_packages: list[str]
     checker_debian_packages: list[str]
     has_docker_compose: bool
+    vulnbox_debian_packages: list[str]
+    vulnbox_postinst_commands: list[str]
 
     @property
     def docker_compose_path(self) -> Path | None:
@@ -59,6 +61,8 @@ def _parse(path: Path, meta: Path) -> Service:
         (path / p).is_file()
         for p in ("docker-compose.yml", "src/docker-compose.yml")
     )
+    vulnbox_deb = _nested_list(text, "install", "debian_packages")
+    postinst = _nested_list(text, "install", "postinst_commands")
 
     return Service(
         path=path,
@@ -69,6 +73,8 @@ def _parse(path: Path, meta: Path) -> Service:
         checker_pip_packages=checker_pip,
         checker_debian_packages=checker_deb,
         has_docker_compose=has_compose,
+        vulnbox_debian_packages=vulnbox_deb,
+        vulnbox_postinst_commands=postinst,
     )
 
 
