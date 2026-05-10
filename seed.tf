@@ -41,5 +41,19 @@ resource "null_resource" "seed_services" {
     working_dir = path.module
     command     = "${path.module}/scripts/wait-and-seed.sh"
     interpreter = ["/bin/bash", "-c"]
+    # Pass infra IPs explicitly: `terraform output` from a subprocess during an
+    # in-progress apply has been observed to return stale (pre-apply) values
+    # for some outputs even after the underlying resource is recreated, which
+    # made the script poll the previous instance's IP and time out.
+    # Resource attributes referenced here are evaluated by Terraform against
+    # the live in-memory state, so they're always current.
+    environment = {
+      ADMIN_IP            = aws_instance.admin.public_ip
+      GAMESERVER_IP       = aws_instance.gameserver.private_ip
+      CHECKER_IP          = aws_instance.checker.private_ip
+      NUM_TEAMS           = tostring(var.num_teams)
+      VPN_CONFIGS_BUCKET  = aws_s3_bucket.vpn_configs.bucket
+      AWS_REGION_OUT      = var.aws_region
+    }
   }
 }
