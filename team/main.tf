@@ -140,6 +140,13 @@ resource "aws_instance" "vulnbox" {
   })
   user_data_replace_on_change = true
 
+  # 48 GB: stock Ubuntu's 8 GB AMI default fills up during evoting's
+  # Rust-in-docker compile (target/ alone is multi-GB per build).
+  root_block_device {
+    volume_size = 48
+    volume_type = "gp3"
+  }
+
   tags = {
     Name = "ranger_team_${var.team_id}_vulnbox"
   }

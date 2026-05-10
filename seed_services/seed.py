@@ -77,6 +77,8 @@ def main() -> int:
         print(f"missing admin key at {key}", file=sys.stderr)
         return 2
 
+    failures: list[str] = []
+
     if args.all or args.upload:
         for s in services:
             tar = build.tarball(s)
@@ -92,6 +94,8 @@ def main() -> int:
             )
             for team_id, status in sorted(results.items()):
                 print(f"  team {team_id}: {status}")
+                if status != "ok":
+                    failures.append(f"vulnbox/{s.slug}/team{team_id}: {status}")
 
     if args.all or args.checker:
         for s in services:
@@ -101,6 +105,8 @@ def main() -> int:
                 bucket=bucket, region=region, service=s,
             )
             print(f"  {status}")
+            if status.startswith("failed:"):
+                failures.append(f"checker/{s.slug}: {status}")
 
     if args.all or args.db:
         print("== seeding Service rows in gameserver DB ==")
@@ -109,6 +115,12 @@ def main() -> int:
             services=services,
         )
         print(out.rstrip())
+
+    if failures:
+        print(f"\n== {len(failures)} failure(s) — exiting non-zero ==", file=sys.stderr)
+        for f in failures:
+            print(f"  {f}", file=sys.stderr)
+        return 1
 
     return 0
 

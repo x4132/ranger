@@ -8,6 +8,7 @@ shipped under /etc/systemd/system/.
 """
 from __future__ import annotations
 
+import concurrent.futures
 from pathlib import Path
 
 from . import ssh
@@ -23,7 +24,7 @@ def install(
     num_teams: int,
     service: Service,
 ) -> dict[int, str]:
-    """Install `service` on every vulnbox. Returns {team_id: status}."""
+    """Install `service` on every vulnbox in parallel. Returns {team_id: status}."""
     if service.has_docker_compose:
         compose_rel = _compose_relative(service)
         script = _vulnbox_compose_install_script(
@@ -41,14 +42,19 @@ def install(
             postinst_commands=service.vulnbox_postinst_commands,
         )
 
-    results: dict[int, str] = {}
-    for team_id in range(1, num_teams + 1):
+    def _one(team_id: int) -> tuple[int, str]:
         host = f"10.32.{team_id}.4"
+        prefix = f"team{team_id}/{service.slug}"
         try:
-            ssh.host_run(admin_ip, key, host, script, capture=True)
-            results[team_id] = "ok"
+            ssh.host_run(admin_ip, key, host, script, prefix=prefix)
+            return team_id, "ok"
         except Exception as exc:  # pragma: no cover — surface failure per host
-            results[team_id] = f"failed: {exc}"
+            return team_id, f"failed: {exc}"
+
+    results: dict[int, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_teams) as pool:
+        for team_id, status in pool.map(_one, range(1, num_teams + 1)):
+            results[team_id] = status
     return results
 
 
@@ -153,8 +159,14 @@ sudo install -d -m 0755 -o "$SLUG" -g "$SLUG" "$SVC_DIR" "$SVC_DIR/data" || true
 # convention is `DESTDIR=...` and `SERVICEDIR=/srv/<slug>`.
 cd "$DEST"
 sudo make install DESTDIR="$DIST" SERVICEDIR="$SVC_DIR"
+# Set service-user ownership on the staged tree *before* rsync so rsync -a
+# carries it through. If we chown'd /srv/$SLUG after the fact, on a re-run
+# we'd hit the live bindfs mountpoint at /srv/$SLUG/data — chown returns
+# EPERM on a FUSE root and aborts under set -e. Guarded with -d because
+# not every FAUST Makefile populates $SERVICEDIR (e.g., ghost installs
+# directly under /srv/setup with no /srv/ghost/ subtree).
+[ -d "$DIST$SVC_DIR" ] && sudo chown -R "$SLUG:$SLUG" "$DIST$SVC_DIR"
 sudo rsync -a "$DIST/" /
-sudo chown -R "$SLUG:$SLUG" "$SVC_DIR"
 
 # Run postinst commands literally. They may reference paths under /srv/<slug>
 # or systemctl. Wrapped in || true so re-runs survive already-applied state.
@@ -162,16 +174,29 @@ sudo bash -euxc '
 {postinst_block}
 '
 
-sudo systemctl daemon-reload
+# FAUST services use `[Install] WantedBy=faustctf.target` to pull every
+# service-side unit up at boot. The .target itself isn't part of any one
+# service tarball — drop a stub if absent, then enable+start it so all
+# .target.wants symlinks (set up by the postinst commands) take effect.
+if [ ! -f /etc/systemd/system/faustctf.target ]; then
+    sudo tee /etc/systemd/system/faustctf.target >/dev/null <<'TARGET'
+[Unit]
+Description=FAUST CTF service target
+Requires=multi-user.target
+After=multi-user.target
+AllowIsolate=no
 
-# Enable + start any .socket / .service units the install dropped into
-# /etc/systemd/system/ that have [Install] sections. Sockets are preferred
-# (FAUST's accept=true pattern), so try those first.
-for unit in $(find /etc/systemd/system -maxdepth 1 -type f -name "$SLUG*.socket" -o -name "$SLUG.socket"); do
-    name=$(basename "$unit")
-    sudo systemctl enable --now "$name" || true
-done
-for unit in $(find /etc/systemd/system -maxdepth 1 -type f -name "$SLUG.service"); do
+[Install]
+WantedBy=multi-user.target
+TARGET
+fi
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now faustctf.target
+
+# Service-named units that *aren't* covered by faustctf.target (e.g. socket
+# activation units like veighty-machinery.socket) — enable/start by name.
+for unit in $(find /etc/systemd/system -maxdepth 1 -type f \( -name "$SLUG*.socket" -o -name "$SLUG.service" \)); do
     name=$(basename "$unit")
     sudo systemctl enable --now "$name" || true
 done
