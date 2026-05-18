@@ -42,6 +42,18 @@ resource "aws_security_group" "vpn_sg" {
     security_groups = [aws_security_group.admin_sg.id]
   }
 
+  # Forwarded return traffic from vulnboxes carries src=10.32.X.4 and
+  # dst=<VPN tunnel IP>; the ENI's stateful SG doesn't have an outbound
+  # conntrack entry for it (the original outbound src was the VPN client,
+  # not this ENI), so without an explicit ingress rule the reply is dropped.
+  ingress {
+    description = "Allow forwarded return traffic from teams VPC"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [aws_vpc.ranger_teams.cidr_block]
+  }
+
   tags = {
     Name = "vpn_sg"
   }

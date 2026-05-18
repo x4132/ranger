@@ -227,11 +227,14 @@ write_files:
       IFACE=$(ip -4 route show default | awk '{print $5; exit}')
       iptables -A FORWARD -i tun+ -j ACCEPT
       iptables -A FORWARD -o tun+ -j ACCEPT
-      # Skip NAT when the destination is one of our VPCs: the VPC route tables
-      # route the VPN tunnel CIDRs back to this host's ENI, so internal hosts
-      # (vulnboxes, admin, gameserver, checker) see the real VPN client source
-      # IP. Only NAT outbound internet traffic.
-      iptables -t nat -A POSTROUTING -s "$VPN_CIDR"         -d "$TEAMS_VPC_CIDR" -j RETURN
+      # Skip NAT when the destination is one of our VPCs so internal hosts see
+      # the real VPN client source IP — but ONLY where the destination VPC's
+      # CIDR is reachable from the receiving VPC's route tables without
+      # crossing peering with an out-of-CIDR source. VPN_CIDR -> TEAMS_VPC_CIDR
+      # cannot do this: peering between ranger_main and ranger_teams won't
+      # forward packets whose dst (10.8.0.0/16) is outside the peer VPC's CIDR,
+      # so SYN-ACKs from vulnboxes are silently dropped. We MASQUERADE that
+      # path; the others are left untouched.
       iptables -t nat -A POSTROUTING -s "$VPN_CIDR"         -d "$MAIN_VPC_CIDR"  -j RETURN
       iptables -t nat -A POSTROUTING -s "$VULNBOX_VPN_CIDR" -d "$TEAMS_VPC_CIDR" -j RETURN
       iptables -t nat -A POSTROUTING -s "$VULNBOX_VPN_CIDR" -d "$MAIN_VPC_CIDR"  -j RETURN
